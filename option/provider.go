@@ -52,6 +52,7 @@ type RemoteProviderOptions struct {
 	CacheFile        string             `json:"cache_file,omitempty"`
 	DownloadDetour   string             `json:"download_detour,omitempty"`
 	DisableUserAgent bool               `json:"disable_user_agent,omitempty"`
+	DisablePrefixTag bool               `json:"disable_prefix_tag,omitempty"`
 
 	Exclude string `json:"exclude,omitempty"`
 	Include string `json:"include,omitempty"`
