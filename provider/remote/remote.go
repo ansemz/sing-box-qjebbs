@@ -48,14 +48,15 @@ type Remote struct {
 	logger     log.ContextLogger
 	tag        string
 
-	url            string
-	interval       time.Duration
-	cacheFile      string
-	downloadDetour string
-	exclude        *regexp.Regexp
-	include        *regexp.Regexp
-	userAgent      string
-	disableUA      bool
+	url              string
+	interval         time.Duration
+	cacheFile        string
+	downloadDetour   string
+	exclude          *regexp.Regexp
+	include          *regexp.Regexp
+	userAgent        string
+	disableUA        bool
+	disablePrefixTag bool
 
 	sync.Mutex
 	*adapter.ProviderInfo
@@ -111,15 +112,16 @@ func NewRemote(ctx context.Context, router adapter.Router, logFactory log.Factor
 		logFactory: logFactory,
 		outbound:   service.FromContext[adapter.OutboundManager](ctx),
 
-		tag:            tag,
-		url:            options.URL,
-		interval:       interval,
-		cacheFile:      options.CacheFile,
-		downloadDetour: options.DownloadDetour,
-		userAgent:      ua,
-		disableUA:      options.DisableUserAgent,
-		exclude:        exclude,
-		include:        include,
+		tag:              tag,
+		url:              options.URL,
+		interval:         interval,
+		cacheFile:        options.CacheFile,
+		downloadDetour:   options.DownloadDetour,
+		userAgent:        ua,
+		disableUA:        options.DisableUserAgent,
+		disablePrefixTag: options.DisablePrefixTag,
+		exclude:          exclude,
+		include:          include,
 
 		ctx:     ctx,
 		chReady: make(chan struct{}),
@@ -303,7 +305,12 @@ func (s *Remote) processLine(line string) (adapter.Outbound, error) {
 	if err != nil {
 		return nil, E.New("make options:", err)
 	}
-	tag := s.tag + "/" + opt.Tag
+
+	tag := opt.Tag
+	if !s.disablePrefixTag {
+		tag = s.tag + "/" + tag
+	}
+
 	err = s.outbound.Create(
 		s.parentCtx,
 		s.router,
