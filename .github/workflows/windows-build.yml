@@ -101,7 +101,7 @@ jobs:
           echo "COMMIT_ID=${{ needs.calculate_version.outputs.commit_id }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: 构建 Windows 64位应用
         run: |
-          go build -v -o dist/sing-box-${{ env.COMMIT_ID }}-windows-amd64/sing-box.exe -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${{ env.VERSION }}'" -tags "with_quic with_grpc with_dhcp with_wireguard with_utls with_reality_server with_acme with_clash_api with_gvisor with_tailscale" ./cmd/sing-box
+          go build -v -o dist/sing-box-${{ env.COMMIT_ID }}-windows-amd64/sing-box.exe -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${{ env.VERSION }}'" -tags "with_quic with_grpc with_dhcp with_wireguard with_utls with_acme with_clash_api with_gvisor with_tailscale" ./cmd/sing-box
       - name: 打包
         run: |
           mkdir -p dist/release
