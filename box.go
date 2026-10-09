@@ -725,6 +725,10 @@ func (s *Box) Outbound() adapter.OutboundManager {
 	return s.outbound
 }
 
+func (s *Box) Provider() adapter.ProviderManager {
+	return s.provider
+}
+
 func (s *Box) Endpoint() adapter.EndpointManager {
 	return s.endpoint
 }

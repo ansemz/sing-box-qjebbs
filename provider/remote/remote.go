@@ -154,6 +154,7 @@ func (s *Remote) Start(stage adapter.StartStage) error {
 			Transport: transport,
 		}
 		s.ctx, s.cancel = context.WithCancel(s.ctx)
+		s.quickStart()
 		go s.refreshLoop()
 		return nil
 	default:
@@ -240,6 +241,19 @@ func (s *Remote) UpdatedAt() time.Time {
 	return s.updatedAt
 }
 
+func (s *Remote) quickStart() {
+	if s.options.CacheFile == "" {
+		return
+	}
+	fc, err := loadCache(s.options.CacheFile)
+	if err != nil {
+		return
+	}
+	s.updateOutboundsWithContent(fc)
+	close(s.chReady)
+	s.chReady = closedchan
+}
+
 // Update fetches and updates outbounds from the provider.
 func (s *Remote) Update() error {
 	s.Lock()
@@ -260,14 +274,18 @@ func (s *Remote) Update() error {
 	if err != nil {
 		return err
 	}
+	s.updateOutboundsWithContent(c)
+	return nil
+}
+
+func (s *Remote) updateOutboundsWithContent(c *fileContent) {
 	s.updatedAt = c.updated
 	s.ProviderInfo = c.ProviderInfo
 	if s.loadedHash == c.linksHash {
-		return nil
+		return
 	}
 	s.loadedHash = c.linksHash
 	s.updateOutbounds(c.links)
-	return nil
 }
 
 func (s *Remote) updateOutbounds(content string) {

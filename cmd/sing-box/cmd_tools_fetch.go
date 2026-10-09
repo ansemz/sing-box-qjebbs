@@ -45,6 +45,9 @@ func fetch(args []string) error {
 		return err
 	}
 	defer instance.Close()
+	for _, provider := range instance.Provider().Providers() {
+		provider.Wait()
+	}
 	httpClient = &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
