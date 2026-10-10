@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"io"
 	"os"
 	"sync"
 
@@ -31,9 +30,6 @@ func NewManager(registry adapter.ProviderRegistry) *Manager {
 	}
 }
 
-func (m *Manager) Initialize() {
-}
-
 func providerName(providerItem adapter.Provider) string {
 	return "provider/" + providerItem.Type() + "[" + providerItem.Tag() + "]"
 }
@@ -56,43 +52,15 @@ func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			continue
 		}
 		started[providerTag] = true
-		err := m.startProvider(providerToStart, stage)
-		if err != nil {
-			return E.Cause(err, "start provider", "[", providerTag, "]")
+		lifecycle, isLifecycle := providerToStart.(adapter.Lifecycle)
+		if isLifecycle {
+			err := m.scope.Start(providerName(providerToStart), lifecycle, stage)
+			if err != nil {
+				return E.Cause(err, "start provider", "[", providerTag, "]")
+			}
 		}
 	}
 	return nil
-}
-
-// startProvider hands the provider over to the scope: the scope lazily creates its child
-// scope and owns the stage timing and the automatic cleanup.
-func (m *Manager) startProvider(providerToStart adapter.Provider, stage adapter.StartStage) error {
-	lifecycle, isLifecycle := providerToStart.(adapter.Lifecycle)
-	if !isLifecycle {
-		return E.New("provider does not implement adapter.Lifecycle: ", providerName(providerToStart))
-	}
-	return m.scope.Start(providerName(providerToStart), lifecycle, stage)
-}
-
-func (m *Manager) Close() error {
-	m.access.Lock()
-	if !m.started {
-		m.access.Unlock()
-		return nil
-	}
-	m.started = false
-	providers := m.providers
-	m.providers = nil
-	m.access.Unlock()
-	var err error
-	for _, provider := range providers {
-		if closer, isCloser := provider.(io.Closer); isCloser {
-			err = E.Append(err, closer.Close(), func(err error) error {
-				return E.Cause(err, "close provider/", "[", provider.Tag(), "]")
-			})
-		}
-	}
-	return err
 }
 
 func (m *Manager) Providers() []adapter.Provider {
@@ -110,10 +78,36 @@ func (m *Manager) Provider(tag string) (adapter.Provider, bool) {
 
 func (m *Manager) Remove(tag string) error {
 	m.access.Lock()
+	provider, found := m.take(tag)
+	started := m.started
+	m.access.Unlock()
+	if !found {
+		return os.ErrInvalid
+	}
+	if !started {
+		return nil
+	}
+	// The provider lives in the manager's scope: removing it cancels its context and runs
+	// its cleanups in reverse order, so there is no separate Close to call here.
+	//
+	// This is done outside of m.access on purpose: the cleanups may block for seconds (closing
+	// transports, waiting for goroutines) and may call back into this manager, and m.access is
+	// not reentrant.
+	lifecycle, isLifecycle := provider.(adapter.Lifecycle)
+	if !isLifecycle {
+		return nil
+	}
+	if err := m.scope.Remove(lifecycle); err != nil {
+		return E.Cause(err, "close provider [", tag, "]")
+	}
+	return nil
+}
+
+// take detaches a provider from the registry, the caller must hold m.access.
+func (m *Manager) take(tag string) (adapter.Provider, bool) {
 	provider, found := m.providerByTag[tag]
 	if !found {
-		m.access.Unlock()
-		return os.ErrInvalid
+		return nil, false
 	}
 	delete(m.providerByTag, tag)
 	index := common.Index(m.providers, func(it adapter.Provider) bool {
@@ -123,49 +117,64 @@ func (m *Manager) Remove(tag string) error {
 		panic("invalid provider index")
 	}
 	m.providers = append(m.providers[:index], m.providers[index+1:]...)
-	started := m.started
-	m.access.Unlock()
-	if started {
-		return common.Close(provider)
-	}
-	return nil
+	return provider, true
+}
+
+// register records a provider, the caller must hold m.access.
+func (m *Manager) register(tag string, provider adapter.Provider) {
+	m.providers = append(m.providers, provider)
+	m.providerByTag[tag] = provider
 }
 
 func (m *Manager) Create(ctx context.Context, router adapter.Router, logFactory log.Factory, tag string, providerType string, options any) error {
 	if tag == "" {
 		return os.ErrInvalid
 	}
-
 	provider, err := m.registry.CreateProvider(ctx, router, logFactory, tag, providerType, options)
 	if err != nil {
 		return err
 	}
 	m.access.Lock()
-	defer m.access.Unlock()
-	if m.started {
+	if !m.started {
+		// Created before the manager starts: Start will start it stage by stage.
+		m.take(tag)
+		m.register(tag, provider)
+		m.access.Unlock()
+		return nil
+	}
+	m.access.Unlock()
+	// Providers created at runtime are children of the manager's own scope: Remove(tag)
+	// detaches them individually, while the scope tree still closes any leftover on shutdown.
+	// This runs outside of m.access on purpose: Start may call back into the manager or block
+	// on other locks of the box, and m.access is not reentrant.
+	lifecycle, isLifecycle := provider.(adapter.Lifecycle)
+	if isLifecycle {
 		for _, stage := range adapter.ListStartStages {
-			err = m.startProvider(provider, stage)
+			err = m.scope.Start(providerName(provider), lifecycle, stage)
 			if err != nil {
+				_ = m.scope.Remove(lifecycle)
 				return E.Cause(err, stage, " provider/", "[", provider.Tag(), "]")
 			}
 		}
 	}
-	if existsProvider, loaded := m.providerByTag[tag]; loaded {
-		if m.started {
-			err = common.Close(existsProvider)
-			if err != nil {
-				return E.Cause(err, "close provider", "[", existsProvider.Tag(), "]")
-			}
-		}
-		existsIndex := common.Index(m.providers, func(it adapter.Provider) bool {
-			return it == existsProvider
-		})
-		if existsIndex == -1 {
-			panic("invalid provider index")
-		}
-		m.providers = append(m.providers[:existsIndex], m.providers[existsIndex+1:]...)
+	// Replace the provider with the same tag, if any. The old one is detached before the new
+	// one is registered, and its teardown is delayed until m.access is released, see below.
+	m.access.Lock()
+	existsProvider, replaced := m.take(tag)
+	m.register(tag, provider)
+	m.access.Unlock()
+	if !replaced {
+		return nil
 	}
-	m.providers = append(m.providers, provider)
-	m.providerByTag[tag] = provider
+	// The replaced provider is torn down outside of m.access, for the same reason the startup
+	// above runs unlocked: the cleanups may block for seconds and may call back into the manager.
+	existsLifecycle, isLifecycle := existsProvider.(adapter.Lifecycle)
+	if !isLifecycle {
+		return nil
+	}
+	err = m.scope.Remove(existsLifecycle)
+	if err != nil {
+		return E.Cause(err, "close provider [", tag, "]")
+	}
 	return nil
 }

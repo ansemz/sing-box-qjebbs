@@ -221,15 +221,11 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logger log.
 		m.access.Unlock()
 		return E.New("cannot create outbound with a internal tag ", tag, " after manager has started")
 	}
-	err = m.remove(tag)
 	m.access.Unlock()
-	if err != nil && err != os.ErrInvalid {
-		return err
-	}
 	// Outbounds created at runtime are children of the manager's own scope: Remove(tag)
 	// detaches them individually, while the scope tree still closes any leftover on shutdown.
-	// Note that m.access must not be held while starting components, they may call back into
-	// the manager.
+	// This runs outside of m.access on purpose: Start may call back into the manager or block
+	// on other locks of the box, and m.access is not reentrant.
 	if lifecycle, isLifecycle := outbound.(adapter.Lifecycle); isLifecycle {
 		name := "outbound/" + outbound.Type() + "[" + tag + "]"
 		for _, stage := range adapter.ListStartStages {
@@ -240,45 +236,85 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logger log.
 			}
 		}
 	}
+	// Replace the outbound with the same tag, if any. The old one is detached before the new
+	// one is registered, and its teardown is delayed until m.access is released, see below.
 	m.access.Lock()
-	defer m.access.Unlock()
-	return m.register(tag, outbound, outboundType, options)
+	existsOutbound, replaced := m.take(tag)
+	err = m.register(tag, outbound, outboundType, options)
+	if err == nil && replaced && existsOutbound == m.defaultOutbound {
+		// Keep the default pointing at a live object: the replacement takes its place.
+		// It must not be cleared to nil, the default outbound is dereferenced unconditionally.
+		m.defaultOutbound = outbound
+	}
+	m.access.Unlock()
+	if err != nil {
+		return err
+	}
+	if !replaced {
+		return nil
+	}
+	// The replaced outbound is torn down outside of m.access, for the same reason the startup
+	// above runs unlocked: the cleanups may block for seconds and may call back into the manager.
+	existsLifecycle, isLifecycle := existsOutbound.(adapter.Lifecycle)
+	if !isLifecycle {
+		return nil
+	}
+	err = m.scope.Remove(existsLifecycle)
+	if err != nil {
+		return E.Cause(err, "close outbound [", tag, "]")
+	}
+	return nil
 }
 
-func (m *Manager) Remove(tag string) error {
-	m.access.Lock()
-	defer m.access.Unlock()
-	return m.remove(tag)
-}
-
-func (m *Manager) remove(tag string) error {
+// take detaches an outbound from the registry, the caller must hold m.access.
+func (m *Manager) take(tag string) (adapter.Outbound, bool) {
 	outbound, found := m.outboundByTag[tag]
 	if !found {
-		return os.ErrInvalid
-	}
-	if m.isInternal(tag) {
-		return E.New("cannot remove internal outbound with tag ", tag)
+		return nil, false
 	}
 	delete(m.outboundByTag, tag)
 	index := common.Index(m.outbounds, func(it adapter.Outbound) bool {
 		return it == outbound
 	})
 	if index == -1 {
-		panic("invalid inbound index")
+		panic("invalid outbound index")
 	}
 	m.outbounds = append(m.outbounds[:index], m.outbounds[index+1:]...)
-	if !m.started {
+	return outbound, true
+}
+
+// Remove detaches and closes an outbound, m.access must not be held.
+func (m *Manager) Remove(tag string) error {
+	m.access.Lock()
+	outbound, found := m.outboundByTag[tag]
+	if !found {
+		m.access.Unlock()
+		return os.ErrInvalid
+	}
+	if m.isInternal(tag) {
+		m.access.Unlock()
+		return E.New("cannot remove internal outbound with tag ", tag)
+	}
+	m.take(tag)
+	started := m.started
+	m.access.Unlock()
+	if !started {
 		return nil
 	}
-	var err error
-	// Runtime objects live in the manager's scope: removing one cancels its context and runs
-	// its cleanups in reverse order.
-	if lifecycle, isLifecycle := outbound.(adapter.Lifecycle); isLifecycle {
-		err = m.scope.Remove(lifecycle)
+	// The outbound lives in the manager's scope: removing it cancels its context and runs
+	// its cleanups in reverse order, so there is no separate Close to call here.
+	//
+	// This is done outside of m.access on purpose: the cleanups may block for seconds (closing
+	// transports, waiting for goroutines) and may call back into this manager, and m.access is
+	// not reentrant.
+	lifecycle, isLifecycle := outbound.(adapter.Lifecycle)
+	if !isLifecycle {
+		return nil
 	}
-	return E.Append(err, common.Close(outbound), func(err error) error {
+	if err := m.scope.Remove(lifecycle); err != nil {
 		return E.Cause(err, "close outbound [", tag, "]")
-	})
+	}
+	return nil
 }
 
 // register records a created (and already started) outbound, the caller must hold m.access.
