@@ -8,6 +8,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/batch"
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
@@ -46,6 +47,7 @@ func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	m.access.Unlock()
 
 	started := make(map[string]bool)
+	b, _ := batch.New[any](scope.Context())
 	for _, providerToStart := range providers {
 		providerTag := providerToStart.Tag()
 		if started[providerTag] {
@@ -53,12 +55,19 @@ func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		}
 		started[providerTag] = true
 		lifecycle, isLifecycle := providerToStart.(adapter.Lifecycle)
-		if isLifecycle {
+		if !isLifecycle {
+			continue
+		}
+		b.Go(providerTag, func() (any, error) {
 			err := m.scope.Start(providerName(providerToStart), lifecycle, stage)
 			if err != nil {
-				return E.Cause(err, "start provider", "[", providerTag, "]")
+				return nil, err
 			}
-		}
+			return nil, nil
+		})
+	}
+	if err := b.Wait(); err != nil {
+		return E.Cause(err.Err, "start provider", "[", err.Key, "]")
 	}
 	return nil
 }
