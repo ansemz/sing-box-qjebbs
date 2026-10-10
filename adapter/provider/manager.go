@@ -154,14 +154,15 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logFactory 
 	m.access.Unlock()
 	// Providers created at runtime are children of the manager's own scope: Remove(tag)
 	// detaches them individually, while the scope tree still closes any leftover on shutdown.
+	// StartRuntime also detaches one whose start failed, since the caller here has already
+	// dropped its reference.
 	// This runs outside of m.access on purpose: Start may call back into the manager or block
 	// on other locks of the box, and m.access is not reentrant.
 	lifecycle, isLifecycle := provider.(adapter.Lifecycle)
 	if isLifecycle {
 		for _, stage := range adapter.ListStartStages {
-			err = m.scope.Start(providerName(provider), lifecycle, stage)
+			err = m.scope.StartRuntime(providerName(provider), lifecycle, stage)
 			if err != nil {
-				_ = m.scope.Remove(lifecycle)
 				return E.Cause(err, stage, " provider/", "[", provider.Tag(), "]")
 			}
 		}

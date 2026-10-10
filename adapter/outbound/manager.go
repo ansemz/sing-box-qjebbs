@@ -224,14 +224,15 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logger log.
 	m.access.Unlock()
 	// Outbounds created at runtime are children of the manager's own scope: Remove(tag)
 	// detaches them individually, while the scope tree still closes any leftover on shutdown.
+	// StartRuntime also detaches one whose start failed, since the caller here has already
+	// dropped its reference.
 	// This runs outside of m.access on purpose: Start may call back into the manager or block
 	// on other locks of the box, and m.access is not reentrant.
 	if lifecycle, isLifecycle := outbound.(adapter.Lifecycle); isLifecycle {
 		name := "outbound/" + outbound.Type() + "[" + tag + "]"
 		for _, stage := range adapter.ListStartStages {
-			err = m.scope.Start(name, lifecycle, stage)
+			err = m.scope.StartRuntime(name, lifecycle, stage)
 			if err != nil {
-				_ = m.scope.Remove(lifecycle)
 				return err
 			}
 		}
@@ -360,13 +361,13 @@ func (m *Manager) DupOverrideDetour(ctx context.Context, scope *adapter.Scope, r
 		return nil, E.New("[" + tag + "] detour not overridable")
 	}
 	// The duplicated outbound is not managed by the manager: it lives in the scope provided
-	// by the caller, which is responsible for closing it.
+	// by the caller, which is responsible for closing it. When its start fails it is detached
+	// from that scope right away instead, it is not a running component the caller could use.
 	if lifecycle, isLifecycle := outbound.(adapter.Lifecycle); isLifecycle {
 		name := "outbound/" + outbound.Type() + "[" + tag + "]"
 		for _, stage := range adapter.ListStartStages {
-			err = scope.Start(name, lifecycle, stage)
+			err = scope.StartRuntime(name, lifecycle, stage)
 			if err != nil {
-				_ = scope.Remove(lifecycle)
 				return nil, err
 			}
 		}

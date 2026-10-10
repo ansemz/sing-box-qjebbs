@@ -122,10 +122,11 @@ func (s *Scope) Add(cleanup func() error) {
 // Start runs one stage of component in its own child scope, creating that scope on
 // the first stage.
 //
-// A failing stage is not rolled back here. The child scope stays registered, and the
-// half-started component is only closed when the whole scope is closed, so a caller
-// that aborts the creation must call Remove itself. Starting on an already closed
-// scope does nothing and returns the context error.
+// A failing stage is not rolled back here: the child scope stays registered, and the
+// half-started component is only closed when the whole scope is closed. That is what
+// an aborted startup wants, while callers that create components at runtime use
+// StartRuntime, which detaches on failure. Starting on an already closed scope does
+// nothing and returns the context error.
 func (s *Scope) Start(name string, component Lifecycle, stage StartStage) error {
 	s.access.Lock()
 	err := s.ctx.Err()
@@ -166,10 +167,26 @@ func (s *Scope) Start(name string, component Lifecycle, stage StartStage) error 
 	return nil
 }
 
+// StartRuntime runs one stage of a component created and destroyed at runtime, like
+// Start, but a failing stage also removes it from the scope: the caller has already
+// dropped its own reference while the box keeps running, so nothing else would close
+// it before shutdown.
+func (s *Scope) StartRuntime(name string, component Lifecycle, stage StartStage) error {
+	err := s.Start(name, component, stage)
+	if err == nil {
+		return nil
+	}
+	removeErr := s.Remove(component)
+	if removeErr != nil {
+		return E.Errors(err, E.Cause(removeErr, "remove ", name))
+	}
+	return err
+}
+
 // Remove closes and detaches the child scope created for component by Start. It is
 // the counterpart of Start for components created and destroyed at runtime, whose
-// lifetime must not last until the whole scope is closed, and the rollback for a
-// component whose Start failed.
+// lifetime must not last until the whole scope is closed, and the rollback behind
+// StartRuntime.
 //
 // Components that were never started, or already removed, are ignored, so it is
 // safe to call unconditionally.
