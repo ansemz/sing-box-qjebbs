@@ -26,7 +26,7 @@ func RegisterLoadBalance(registry *outbound.Registry) {
 var (
 	_ adapter.Outbound                = (*LoadBalance)(nil)
 	_ adapter.URLTestGroup            = (*LoadBalance)(nil)
-	_ adapter.SimpleLifecycle         = (*LoadBalance)(nil)
+	_ adapter.Lifecycle               = (*LoadBalance)(nil)
 	_ adapter.InterfaceUpdateListener = (*LoadBalance)(nil)
 )
 
@@ -132,7 +132,7 @@ func (s *LoadBalance) ListenPacket(ctx context.Context, destination M.Socksaddr)
 	return nil, lastErr
 }
 
-// Close implements adapter.Service
+// Close releases the load balancer resources, it is registered on the scope by Start.
 func (s *LoadBalance) Close() error {
 	if s.Balancer != nil {
 		s.Balancer.HealthCheck.UnregisterPostCheckListener(s.interruptOutdatedConnections)
@@ -142,8 +142,12 @@ func (s *LoadBalance) Close() error {
 	return nil
 }
 
-// Start implements adapter.Service
-func (s *LoadBalance) Start() error {
+// Start implements adapter.Lifecycle
+func (s *LoadBalance) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
+	scope.Add(s.Close)
 	if err := s.InitProviders(s.outbound, s.provider); err != nil {
 		return err
 	}

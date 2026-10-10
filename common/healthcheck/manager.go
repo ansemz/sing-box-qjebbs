@@ -23,6 +23,7 @@ var (
 // shares transports.
 type Manager struct {
 	ctx    context.Context
+	scope  *adapter.Scope
 	logger log.ContextLogger
 	access sync.Mutex
 
@@ -57,7 +58,12 @@ func (m *Manager) Name() string {
 }
 
 // Start implements adapter.LifecycleService.
-func (m *Manager) Start(stage adapter.StartStage) error {
+func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if m.scope != nil {
+		return nil
+	}
+	m.scope = scope
+	m.scope.Add(m.Close)
 	return nil
 }
 

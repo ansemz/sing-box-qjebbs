@@ -27,6 +27,7 @@ var (
 	_ adapter.Outbound                = (*URLTestProvider)(nil)
 	_ adapter.URLTestGroup            = (*URLTestProvider)(nil)
 	_ adapter.InterfaceUpdateListener = (*URLTestProvider)(nil)
+	_ adapter.Lifecycle               = (*URLTestProvider)(nil)
 )
 
 type URLTestProvider struct {
@@ -69,7 +70,11 @@ func NewURLTestProvider(ctx context.Context, router adapter.Router, logger log.C
 	}, nil
 }
 
-func (s *URLTestProvider) Start() error {
+func (s *URLTestProvider) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
+	scope.Add(s.Close)
 	if err := s.InitProviders(s.outbound, s.provider); err != nil {
 		return err
 	}
@@ -92,7 +97,8 @@ func (s *URLTestProvider) Start() error {
 	return nil
 }
 
-func (s URLTestProvider) Close() error {
+// Close implements the cleanup registered on the scope by Start.
+func (s *URLTestProvider) Close() error {
 	if s.HealthCheck == nil {
 		return nil
 	}

@@ -10,7 +10,6 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/batch"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/json/badoption"
@@ -37,7 +36,9 @@ type HealthCheck struct {
 	mergedProviders *mergedProvider
 	cancel          context.CancelFunc
 	detourOf        []adapter.Outbound
-	globalHistory   *urltest.HistoryStorage
+	// detourScope holds the lifetime of the outbounds returned by DupOverrideDetour.
+	detourScope   *adapter.Scope
+	globalHistory *urltest.HistoryStorage
 
 	loopCtx     context.Context
 	loopStarted bool
@@ -122,9 +123,11 @@ func (h *HealthCheck) Start() error {
 		}
 		detour := newDetourVar()
 		h.detourOf = make([]adapter.Outbound, len(h.options.DetourOf))
+		// All detour duplicates share a single scope and are torn down together in Close.
+		h.detourScope = adapter.NewScope(h.ctx, h.logger)
 		for i := len(h.options.DetourOf) - 1; i >= 0; i-- {
 			tag := h.options.DetourOf[i]
-			outbound, err := h.om.DupOverrideDetour(h.ctx, h.router, tag, h.logger, detour)
+			outbound, err := h.om.DupOverrideDetour(h.ctx, h.detourScope, h.router, tag, h.logger, detour)
 			if err != nil {
 				return E.Cause(err, "detour_of")
 			}
@@ -162,10 +165,12 @@ func (h *HealthCheck) Close() error {
 	h.loopCtx = nil
 	h.loopStarted = false
 	h.loopMu.Unlock()
-	for _, detour := range h.detourOf {
-		common.Close(detour)
+	if h.detourScope == nil {
+		return nil
 	}
-	return nil
+	err := h.detourScope.Close()
+	h.detourScope = nil
+	return err
 }
 
 // InterfaceUpdated implements adapter.InterfaceUpdateListener

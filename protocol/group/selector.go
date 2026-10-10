@@ -29,6 +29,7 @@ func RegisterSelector(registry *outbound.Registry) {
 
 var (
 	// _ adapter.OutboundGroup           = (*Selector)(nil)
+	_ adapter.Referrer                = (*Selector)(nil)
 	_ adapter.ConnectionHandler       = (*Selector)(nil)
 	_ adapter.PacketConnectionHandler = (*Selector)(nil)
 )
@@ -76,7 +77,10 @@ func (s *Selector) Network() []string {
 	return selected.Network()
 }
 
-func (s *Selector) Start() error {
+func (s *Selector) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
 	for i, tag := range s.tags {
 		detour, loaded := s.outbound.Outbound(tag)
 		if !loaded {
@@ -122,6 +126,10 @@ func (s *Selector) Now() string {
 
 func (s *Selector) All() []string {
 	return s.tags
+}
+
+func (s *Selector) References() []string {
+	return []string{s.Now()}
 }
 
 func (s *Selector) SelectOutbound(tag string) bool {

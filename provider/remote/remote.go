@@ -31,6 +31,7 @@ func RegisterRemote(registry *provider.Registry) {
 }
 
 var _ adapter.Provider = (*Remote)(nil)
+var _ adapter.Lifecycle = (*Remote)(nil)
 var _ adapter.ProviderInfoer = (*Remote)(nil)
 var _ adapter.Service = (*Remote)(nil)
 
@@ -136,12 +137,12 @@ func (s *Remote) Info() *adapter.ProviderInfo {
 }
 
 // Start starts the provider.
-func (s *Remote) Start(stage adapter.StartStage) error {
+func (s *Remote) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	s.Lock()
 	defer s.Unlock()
 
 	switch stage {
-	case adapter.StartStateStart:
+	case adapter.StartStateInitialize:
 		if s.cancel != nil {
 			return nil
 		}
@@ -153,13 +154,15 @@ func (s *Remote) Start(stage adapter.StartStage) error {
 			Timeout:   time.Second * 30,
 			Transport: transport,
 		}
-		s.ctx, s.cancel = context.WithCancel(s.ctx)
+		// The runtime context derives from the scope: closing the scope cancels it first
+		// (aborting downloads and the refresh loop) and then runs the registered cleanups.
+		s.ctx, s.cancel = context.WithCancel(scope.Context())
+	case adapter.StartStateStart:
+		scope.Add(s.Close)
 		s.quickStart()
 		go s.refreshLoop()
-		return nil
-	default:
-		return nil
 	}
+	return nil
 }
 
 // Close closes the service.

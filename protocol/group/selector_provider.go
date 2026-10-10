@@ -24,6 +24,7 @@ func RegisterSelectorProvider(registry *outbound.Registry) {
 var (
 	_ adapter.Outbound      = (*SelectorProvider)(nil)
 	_ adapter.OutboundGroup = (*SelectorProvider)(nil)
+	_ adapter.Lifecycle     = (*SelectorProvider)(nil)
 )
 
 type SelectorProvider struct {
@@ -62,7 +63,10 @@ func (s *SelectorProvider) Network() []string {
 	return selected.Network()
 }
 
-func (s *SelectorProvider) Start() error {
+func (s *SelectorProvider) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
 	if err := s.InitProviders(s.outbound, s.provider); err != nil {
 		return err
 	}

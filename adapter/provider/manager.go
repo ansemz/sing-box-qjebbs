@@ -7,29 +7,25 @@ import (
 	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/taskmonitor"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/logger"
 )
 
 var _ adapter.ProviderManager = (*Manager)(nil)
 
 type Manager struct {
-	logger        log.ContextLogger
 	registry      adapter.ProviderRegistry
 	access        sync.Mutex
 	started       bool
 	stage         adapter.StartStage
+	scope         *adapter.Scope
 	providers     []adapter.Provider
 	providerByTag map[string]adapter.Provider
 }
 
-func NewManager(logger logger.ContextLogger, registry adapter.ProviderRegistry) *Manager {
+func NewManager(registry adapter.ProviderRegistry) *Manager {
 	return &Manager{
-		logger:        logger,
 		registry:      registry,
 		providerByTag: make(map[string]adapter.Provider),
 	}
@@ -38,20 +34,21 @@ func NewManager(logger logger.ContextLogger, registry adapter.ProviderRegistry) 
 func (m *Manager) Initialize() {
 }
 
-func (m *Manager) Start(stage adapter.StartStage) error {
+func providerName(providerItem adapter.Provider) string {
+	return "provider/" + providerItem.Type() + "[" + providerItem.Tag() + "]"
+}
+
+func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	m.access.Lock()
 	if m.started && m.stage >= stage {
 		panic("already started")
 	}
 	m.started = true
 	m.stage = stage
+	m.scope = scope
 	providers := m.providers
 	m.access.Unlock()
-	return m.startProviders(stage, providers)
-}
 
-func (m *Manager) startProviders(stage adapter.StartStage, providers []adapter.Provider) error {
-	monitor := taskmonitor.New(m.logger, C.StartTimeout)
 	started := make(map[string]bool)
 	for _, providerToStart := range providers {
 		providerTag := providerToStart.Tag()
@@ -59,31 +56,25 @@ func (m *Manager) startProviders(stage adapter.StartStage, providers []adapter.P
 			continue
 		}
 		started[providerTag] = true
-		if starter, isStarter := providerToStart.(adapter.Lifecycle); isStarter {
-			monitor.Start("start provider", "[", providerTag, "]")
-			err := starter.Start(stage)
-			monitor.Finish()
-			if err != nil {
-				return E.Cause(err, "start provider", "[", providerTag, "]")
-			}
-		} else if stage == adapter.StartStateStart {
-			if starter, isStarter := providerToStart.(interface {
-				Start() error
-			}); isStarter {
-				monitor.Start("start provider", "[", providerTag, "]")
-				err := starter.Start()
-				monitor.Finish()
-				if err != nil {
-					return E.Cause(err, "start provider", "[", providerTag, "]")
-				}
-			}
+		err := m.startProvider(providerToStart, stage)
+		if err != nil {
+			return E.Cause(err, "start provider", "[", providerTag, "]")
 		}
 	}
 	return nil
 }
 
+// startProvider hands the provider over to the scope: the scope lazily creates its child
+// scope and owns the stage timing and the automatic cleanup.
+func (m *Manager) startProvider(providerToStart adapter.Provider, stage adapter.StartStage) error {
+	lifecycle, isLifecycle := providerToStart.(adapter.Lifecycle)
+	if !isLifecycle {
+		return E.New("provider does not implement adapter.Lifecycle: ", providerName(providerToStart))
+	}
+	return m.scope.Start(providerName(providerToStart), lifecycle, stage)
+}
+
 func (m *Manager) Close() error {
-	monitor := taskmonitor.New(m.logger, C.StopTimeout)
 	m.access.Lock()
 	if !m.started {
 		m.access.Unlock()
@@ -96,14 +87,12 @@ func (m *Manager) Close() error {
 	var err error
 	for _, provider := range providers {
 		if closer, isCloser := provider.(io.Closer); isCloser {
-			monitor.Start("close provider/", "[", provider.Tag(), "]")
 			err = E.Append(err, closer.Close(), func(err error) error {
 				return E.Cause(err, "close provider/", "[", provider.Tag(), "]")
 			})
-			monitor.Finish()
 		}
 	}
-	return nil
+	return err
 }
 
 func (m *Manager) Providers() []adapter.Provider {
@@ -155,7 +144,7 @@ func (m *Manager) Create(ctx context.Context, router adapter.Router, logFactory 
 	defer m.access.Unlock()
 	if m.started {
 		for _, stage := range adapter.ListStartStages {
-			err = adapter.LegacyStart(provider, stage)
+			err = m.startProvider(provider, stage)
 			if err != nil {
 				return E.Cause(err, stage, " provider/", "[", provider.Tag(), "]")
 			}

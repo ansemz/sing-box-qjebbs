@@ -40,19 +40,22 @@ func (g *Group) NewPacketConn(conn net.PacketConn, isExternal bool, outboundTag 
 
 func (g *Group) Interrupt(interruptExternalConnections bool, currentOutboundTags []string) {
 	g.access.Lock()
-	defer g.access.Unlock()
-	var toDelete []*list.Element[*groupConnItem]
-	for element := g.connections.Front(); element != nil; element = element.Next() {
+	var closers []io.Closer
+	for element := g.connections.Front(); element != nil; {
+		nextElement := element.Next()
 		if !g.outboundOutdated(element.Value.outboundTag, currentOutboundTags) {
+			element = nextElement
 			continue
 		}
 		if !element.Value.isExternal || interruptExternalConnections {
-			element.Value.conn.Close()
-			toDelete = append(toDelete, element)
+			closers = append(closers, element.Value.conn)
+			g.connections.Remove(element)
 		}
+		element = nextElement
 	}
-	for _, element := range toDelete {
-		g.connections.Remove(element)
+	g.access.Unlock()
+	for _, closer := range closers {
+		closer.Close()
 	}
 }
 

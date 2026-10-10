@@ -6,7 +6,7 @@ import (
 
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing-tun"
+	tun "github.com/sagernet/sing-tun"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -51,6 +51,16 @@ type OutboundManager interface {
 	Create(ctx context.Context, router Router, logger log.ContextLogger, tag string, outboundType string, options any) error
 	// DupOverrideDetour duplicates the outbound with the specified tag and sets the override and detour for the duplicated outbound.
 	// The original outbound is not affected.
-	// The duplicated outbound is not managed by the manager, you should close it manually.
-	DupOverrideDetour(ctx context.Context, router Router, tag string, logger log.ContextLogger, detour N.Dialer) (Outbound, error)
+	// The duplicated outbound is not managed by the manager, it starts in the given scope
+	// and lives until that scope is closed, so several duplicates can share one scope.
+	DupOverrideDetour(ctx context.Context, scope *Scope, router Router, tag string, logger log.ContextLogger, detour N.Dialer) (Outbound, error)
+}
+
+type IdleConnectionKeeper interface {
+	SetKeepIdleConnections(keep bool)
+	CloseIdleConnections()
+}
+
+type Referrer interface {
+	References() []string
 }

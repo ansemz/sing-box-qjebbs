@@ -9,7 +9,6 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -22,7 +21,8 @@ func RegisterChain(registry *outbound.Registry) {
 }
 
 var (
-	_ adapter.Outbound = (*Chain)(nil)
+	_ adapter.Outbound  = (*Chain)(nil)
+	_ adapter.Lifecycle = (*Chain)(nil)
 )
 
 // Chain is a chain of outbounds.
@@ -57,8 +57,12 @@ func NewChain(ctx context.Context, router adapter.Router, logger log.ContextLogg
 	return Chain, nil
 }
 
-// Start starts the chain.
-func (s *Chain) Start() error {
+// Start starts the chain. The duplicated outbounds are created in the scope owned by the
+// chain, so they are torn down together with it.
+func (s *Chain) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
 	lastTag := s.outboundTags[len(s.outboundTags)-1]
 	detour, loaded := s.outbound.Outbound(lastTag)
 	if !loaded {
@@ -66,7 +70,7 @@ func (s *Chain) Start() error {
 	}
 	for i := len(s.outboundTags) - 2; i >= 0; i-- {
 		tag := s.outboundTags[i]
-		outbound, err := s.outbound.DupOverrideDetour(s.ctx, s.router, tag, s.logger, detour)
+		outbound, err := s.outbound.DupOverrideDetour(s.ctx, scope, s.router, tag, s.logger, detour)
 		if err != nil {
 			return E.New("failed to create [", tag, "] for chain [", s.Tag(), "]: ", err)
 		}
@@ -74,19 +78,6 @@ func (s *Chain) Start() error {
 		detour = outbound
 	}
 	return nil
-}
-
-// Close implements the adapter.Closable interface.
-func (s *Chain) Close() error {
-	var err error
-	for _, outbound := range s.outbounds {
-		if err2 := common.Close(outbound); err2 != nil {
-			err = E.Append(err, err2, func(err error) error {
-				return E.New("close [", outbound.Tag(), "]: ", err)
-			})
-		}
-	}
-	return err
 }
 
 // DialContext implements the network.Dialer interface.
